@@ -1,0 +1,142 @@
+services:
+  api-gateway-tecnoweb:
+    build:
+      context: ./gateway
+    container_name: api-gateway-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9000
+      - AUTH_SERVICE_URL=http://auth-service-tecnoweb:9001
+      - STORE_SERVICE_URL=http://store-service-tecnoweb:9002
+      - PRODUCT_SERVICE_URL=http://product-service-tecnoweb:9003
+      - AUCTION_SERVICE_URL=http://auction-service-tecnoweb:9004
+      - ORDER_SERVICE_URL=http://order-service-tecnoweb:9005
+      - FINANCE_SERVICE_URL=http://finance-service-tecnoweb:9006
+      - WISHLIST_SERVICE_URL=http://wishlist-service-tecnoweb:9007
+      - REVIEW_SERVICE_URL=http://review-service-tecnoweb:9008
+      - GIFTCARD_SERVICE_URL=http://giftcard-service-tecnoweb:9009
+      - DASHBOARD_SERVICE_URL=http://dashboard-service-tecnoweb:9010
+    ports:
+      - "9000:9000"
+    depends_on:
+      - auth-service-tecnoweb
+      - store-service-tecnoweb
+      - product-service-tecnoweb
+      - auction-service-tecnoweb
+      - order-service-tecnoweb
+      - finance-service-tecnoweb
+      - wishlist-service-tecnoweb
+      - review-service-tecnoweb
+      - giftcard-service-tecnoweb
+      - dashboard-service-tecnoweb
+
+  auth-service-tecnoweb:
+    build:
+      context: ./services/auth-service
+    container_name: auth-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9001
+    ports:
+      - "9001:9001"
+
+  store-service-tecnoweb:
+    build:
+      context: ./services/store-service
+    container_name: store-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9002
+    ports:
+      - "9002:9002"
+
+  product-service-tecnoweb:
+    build:
+      context: ./services/product-service
+    container_name: product-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9003
+    ports:
+      - "9003:9003"
+
+  auction-service-tecnoweb:
+    build:
+      context: ./services/auction-service
+    container_name: auction-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9004
+    ports:
+      - "9004:9004"
+
+  order-service-tecnoweb:
+    build:
+      context: ./services/order-service
+    container_name: order-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9005
+    ports:
+      - "9005:9005"
+
+  finance-service-tecnoweb:
+    build:
+      context: ./services/finance-service
+    container_name: finance-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9006
+    ports:
+      - "9006:9006"
+
+  wishlist-service-tecnoweb:
+    build:
+      context: ./services/wishlist-service
+    container_name: wishlist-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9007
+    ports:
+      - "9007:9007"
+
+  review-service-tecnoweb:
+    build:
+      context: ./services/review-service
+    container_name: review-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9008
+    ports:
+      - "9008:9008"
+
+  giftcard-service-tecnoweb:
+    build:
+      context: ./services/giftcard-service
+    container_name: giftcard-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9009
+    ports:
+      - "9009:9009"
+
+  dashboard-service-tecnoweb:
+    build:
+      context: ./services/dashboard-service
+    container_name: dashboard-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9010
+    ports:
+      - "9010:9010"
