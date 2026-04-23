@@ -90,7 +90,21 @@ app.get('/', async (req, res) => {
     const filters = []
     if (req.query.storeId) filters.push(`store="${req.query.storeId.replace(/"/g, '')}"`)
     if (req.query.status)  filters.push(`status="${req.query.status.replace(/"/g, '')}"`)
-    if (req.query.search)  filters.push(`title~"${req.query.search.replace(/"/g, '')}"`)
+    if (req.query.hasBuyNow === 'true') filters.push('buy_now_price > 0')
+
+    const minCurrentPrice = Number(req.query.minCurrentPrice)
+    const maxCurrentPrice = Number(req.query.maxCurrentPrice)
+    if (Number.isFinite(minCurrentPrice) && minCurrentPrice >= 0) {
+      filters.push(`current_price >= ${minCurrentPrice}`)
+    }
+    if (Number.isFinite(maxCurrentPrice) && maxCurrentPrice >= 0) {
+      filters.push(`current_price <= ${maxCurrentPrice}`)
+    }
+
+    if (req.query.search) {
+      const safeSearch = req.query.search.replace(/"/g, '')
+      filters.push(`(title~"${safeSearch}" || description~"${safeSearch}")`)
+    }
 
     const allowedSorts = new Set(['-created', 'created', 'end_date', '-end_date', 'start_price', '-start_price', 'current_price', '-current_price'])
     const safeSort = allowedSorts.has(req.query.sort) ? req.query.sort : '-created'
@@ -342,19 +356,27 @@ app.post('/:id/bids', async (req, res) => {
     }
 
     const currentPrice = Number(auction.current_price || auction.start_price || 0)
-    const minRequired  = currentPrice + minIncrement(currentPrice)
-    if (auction.bids_count > 0 ? amount < minRequired : amount < currentPrice) {
+    const hasBids      = Number(auction.bids_count || 0) > 0
+    const minRequired  = hasBids ? currentPrice + minIncrement(currentPrice) : currentPrice
+    if (amount < minRequired) {
       return res.status(400).json({
         error: 'amount_too_low',
-        min_required: auction.bids_count > 0 ? minRequired : currentPrice,
+        min_required: minRequired,
+        current_price: currentPrice,
       })
     }
 
-    const isAutoBid   = Boolean(req.body?.is_auto_bid)
-    const autoBidMax  = Number(req.body?.auto_bid_max || 0)
+    const isAutoBid  = Boolean(req.body?.is_auto_bid)
+    const autoBidMax = Number(req.body?.auto_bid_max || 0)
     if (isAutoBid && autoBidMax < amount) {
       return res.status(400).json({ error: 'auto_bid_max_below_amount' })
     }
+
+    // Cap al buy_now_price: si la puja lo alcanza o supera, se tope exactamente ahí
+    const buyNowPrice    = Number(auction.buy_now_price || 0)
+    const reachesBuyNow  = buyNowPrice > 0 && amount >= buyNowPrice
+    const finalAmount    = reachesBuyNow ? buyNowPrice : amount
+    const finalAutoMax   = isAutoBid ? Math.min(autoBidMax, reachesBuyNow ? buyNowPrice : autoBidMax) : 0
 
     // Crear puja
     const createRes = await fetch(`${PB_URL}/api/collections/auction_bids/records`, {
@@ -363,9 +385,9 @@ app.post('/:id/bids', async (req, res) => {
       body:    JSON.stringify({
         auction:      req.params.id,
         bidder:       userId,
-        amount,
+        amount:       finalAmount,
         is_auto_bid:  isAutoBid,
-        auto_bid_max: isAutoBid ? autoBidMax : 0,
+        auto_bid_max: finalAutoMax,
       }),
     })
     const bidData = await readJsonSafe(createRes)
@@ -373,12 +395,10 @@ app.post('/:id/bids', async (req, res) => {
 
     // Actualizar subasta (current_price, bids_count)
     const patchBody = {
-      current_price: amount,
+      current_price: finalAmount,
       bids_count:    Number(auction.bids_count || 0) + 1,
     }
-
-    // Si alcanzó el buy_now_price, terminar
-    if (auction.buy_now_price && amount >= Number(auction.buy_now_price)) {
+    if (reachesBuyNow) {
       patchBody.status = 'ended'
       patchBody.winner = userId
     }
@@ -389,7 +409,14 @@ app.post('/:id/bids', async (req, res) => {
       body:    JSON.stringify(patchBody),
     })
 
-    res.status(201).json({ ok: true, bid: bidData, ...patchBody })
+    res.status(201).json({
+      ok: true,
+      bid: bidData,
+      final_amount: finalAmount,
+      capped: reachesBuyNow && amount > buyNowPrice,
+      won_auction: reachesBuyNow,
+      ...patchBody,
+    })
   } catch (err) {
     console.error('bid error', err)
     res.status(500).json({ error: err.message })

@@ -109,11 +109,26 @@ app.get('/', async (req, res) => {
     if (req.query.categoryId) filters.push(`category="${req.query.categoryId.replace(/"/g, '')}"`)
     if (req.query.status)     filters.push(`status="${req.query.status.replace(/"/g, '')}"`)
     if (req.query.condition)  filters.push(`condition="${req.query.condition.replace(/"/g, '')}"`)
-    if (req.query.search)     filters.push(`name~"${req.query.search.replace(/"/g, '')}"`)
+    if (req.query.inStock === 'true')    filters.push('stock > 0')
+    if (req.query.featured === 'true')   filters.push('featured = true')
+    if (req.query.discounted === 'true') filters.push('(discount_percent > 0 || discount_amount > 0)')
+
+    const minPrice = Number(req.query.minPrice)
+    const maxPrice = Number(req.query.maxPrice)
+    if (Number.isFinite(minPrice) && minPrice >= 0) filters.push(`price >= ${minPrice}`)
+    if (Number.isFinite(maxPrice) && maxPrice >= 0) filters.push(`price <= ${maxPrice}`)
+
+    if (req.query.search) {
+      const safeSearch = req.query.search.replace(/"/g, '')
+      filters.push(`(name~"${safeSearch}" || description~"${safeSearch}")`)
+    }
+
+    const allowedSorts = new Set(['-created', 'created', 'price', '-price', 'name', '-name', 'stock', '-stock'])
+    const safeSort = allowedSorts.has(req.query.sort) ? req.query.sort : '-created'
 
     const params = new URLSearchParams({
       page, perPage,
-      sort: req.query.sort || '-created',
+      sort: safeSort,
       expand: 'category,store',
     })
     if (filters.length) params.set('filter', filters.join(' && '))
