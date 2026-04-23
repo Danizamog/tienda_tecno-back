@@ -17,6 +17,7 @@ services:
       - REVIEW_SERVICE_URL=http://review-service-tecnoweb:9008
       - GIFTCARD_SERVICE_URL=http://giftcard-service-tecnoweb:9009
       - DASHBOARD_SERVICE_URL=http://dashboard-service-tecnoweb:9010
+      - STORE_FOLLOWERS_SERVICE_URL=http://store-followers-service-tecnoweb:9011
     ports:
       - "9000:9000"
     depends_on:
@@ -30,6 +31,7 @@ services:
       - review-service-tecnoweb
       - giftcard-service-tecnoweb
       - dashboard-service-tecnoweb
+      - store-followers-service-tecnoweb
 
   auth-service-tecnoweb:
     build:
@@ -140,3 +142,14 @@ services:
       - PORT=9010
     ports:
       - "9010:9010"
+
+  store-followers-service-tecnoweb:
+    build:
+      context: ./services/store-followers-service
+    container_name: store-followers-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9011
+    ports:
+      - "9011:9011"

@@ -15,7 +15,8 @@ const FINANCE_SERVICE_URL = process.env.FINANCE_SERVICE_URL || 'http://finance-s
 const WISHLIST_SERVICE_URL = process.env.WISHLIST_SERVICE_URL || 'http://wishlist-service:9007'
 const REVIEW_SERVICE_URL    = process.env.REVIEW_SERVICE_URL    || 'http://review-service:9008'
 const GIFTCARD_SERVICE_URL   = process.env.GIFTCARD_SERVICE_URL   || 'http://giftcard-service:9009'
-const DASHBOARD_SERVICE_URL  = process.env.DASHBOARD_SERVICE_URL  || 'http://dashboard-service:9010'
+const DASHBOARD_SERVICE_URL       = process.env.DASHBOARD_SERVICE_URL       || 'http://dashboard-service:9010'
+const STORE_FOLLOWERS_SERVICE_URL = process.env.STORE_FOLLOWERS_SERVICE_URL || 'http://store-followers-service:9011'
 
 app.use(cors())
 app.use(morgan('dev'))
@@ -28,7 +29,7 @@ app.get('/', (_req, res) => {
   res.json({
     service: 'api-gateway',
     ok: true,
-    routes: ['/auth', '/stores', '/products', '/auctions', '/orders', '/finance', '/wishlist', '/reviews', '/giftcards', '/dashboard'],
+    routes: ['/auth', '/stores', '/products', '/auctions', '/orders', '/finance', '/wishlist', '/reviews', '/giftcards', '/dashboard', '/followers'],
   })
 })
 
@@ -42,6 +43,7 @@ app.use('/wishlist', createProxyMiddleware({ target: WISHLIST_SERVICE_URL, chang
 app.use('/reviews',   createProxyMiddleware({ target: REVIEW_SERVICE_URL,   changeOrigin: true }))
 app.use('/giftcards',  createProxyMiddleware({ target: GIFTCARD_SERVICE_URL,  changeOrigin: true }))
 app.use('/dashboard', createProxyMiddleware({ target: DASHBOARD_SERVICE_URL, changeOrigin: true }))
+app.use('/followers', createProxyMiddleware({ target: STORE_FOLLOWERS_SERVICE_URL, changeOrigin: true }))
 
 app.listen(PORT, () => {
   console.log(`api-gateway running on port ${PORT}`)

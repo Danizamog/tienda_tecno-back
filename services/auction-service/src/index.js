@@ -267,6 +267,226 @@ app.patch('/:id', requireAuth, upload.array('images', 5), async (req, res) => {
   }
 })
 
+// ── Listar pujas de una subasta (público) ─────────────────────────────────────
+app.get('/:id/bids', async (req, res) => {
+  try {
+    const token = await getAdminToken()
+    const page    = Math.max(1, parseInt(req.query.page) || 1)
+    const perPage = Math.min(100, parseInt(req.query.perPage) || 50)
+    const params = new URLSearchParams({
+      page, perPage,
+      filter: `auction="${req.params.id.replace(/"/g, '')}"`,
+      sort:   '-amount',
+      expand: 'bidder',
+    })
+    const pbRes = await fetch(
+      `${PB_URL}/api/collections/auction_bids/records?${params}`,
+      { headers: pbHeaders(token) }
+    )
+    const data = await readJsonSafe(pbRes)
+    if (!pbRes.ok) return res.status(pbRes.status).json(data)
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Helper: cargar subasta completa ───────────────────────────────────────────
+async function loadAuction(token, auctionId) {
+  const pbRes = await fetch(
+    `${PB_URL}/api/collections/auctions/records/${auctionId}?expand=store`,
+    { headers: pbHeaders(token) }
+  )
+  if (!pbRes.ok) return null
+  return pbRes.json()
+}
+
+function minIncrement(currentPrice) {
+  const price = Number(currentPrice || 0)
+  if (price < 100)    return 1
+  if (price < 1000)   return 10
+  if (price < 10000)  return 50
+  return 100
+}
+
+// ── Pujar ─────────────────────────────────────────────────────────────────────
+// POST /:id/bids  { amount, is_auto_bid, auto_bid_max }
+app.post('/:id/bids', async (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] || '').trim()
+    if (!userId) return res.status(401).json({ error: 'unauthorized' })
+
+    const token   = await getAdminToken()
+    const auction = await loadAuction(token, req.params.id)
+    if (!auction) return res.status(404).json({ error: 'not_found' })
+
+    if (auction.status !== 'active') {
+      return res.status(400).json({ error: 'auction_not_active' })
+    }
+    const now = Date.now()
+    if (new Date(auction.start_date).getTime() > now) {
+      return res.status(400).json({ error: 'auction_not_started' })
+    }
+    if (new Date(auction.end_date).getTime() <= now) {
+      return res.status(400).json({ error: 'auction_ended' })
+    }
+
+    // Vendedor no puede pujar en su propia subasta
+    if (userOwnsStore(auction?.expand?.store, userId)) {
+      return res.status(403).json({ error: 'cannot_bid_own_auction' })
+    }
+
+    const amount = Number(req.body?.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'invalid_amount' })
+    }
+
+    const currentPrice = Number(auction.current_price || auction.start_price || 0)
+    const minRequired  = currentPrice + minIncrement(currentPrice)
+    if (auction.bids_count > 0 ? amount < minRequired : amount < currentPrice) {
+      return res.status(400).json({
+        error: 'amount_too_low',
+        min_required: auction.bids_count > 0 ? minRequired : currentPrice,
+      })
+    }
+
+    const isAutoBid   = Boolean(req.body?.is_auto_bid)
+    const autoBidMax  = Number(req.body?.auto_bid_max || 0)
+    if (isAutoBid && autoBidMax < amount) {
+      return res.status(400).json({ error: 'auto_bid_max_below_amount' })
+    }
+
+    // Crear puja
+    const createRes = await fetch(`${PB_URL}/api/collections/auction_bids/records`, {
+      method:  'POST',
+      headers: pbHeaders(token),
+      body:    JSON.stringify({
+        auction:      req.params.id,
+        bidder:       userId,
+        amount,
+        is_auto_bid:  isAutoBid,
+        auto_bid_max: isAutoBid ? autoBidMax : 0,
+      }),
+    })
+    const bidData = await readJsonSafe(createRes)
+    if (!createRes.ok) return res.status(createRes.status).json({ error: 'bid_failed', details: bidData })
+
+    // Actualizar subasta (current_price, bids_count)
+    const patchBody = {
+      current_price: amount,
+      bids_count:    Number(auction.bids_count || 0) + 1,
+    }
+
+    // Si alcanzó el buy_now_price, terminar
+    if (auction.buy_now_price && amount >= Number(auction.buy_now_price)) {
+      patchBody.status = 'ended'
+      patchBody.winner = userId
+    }
+
+    await fetch(`${PB_URL}/api/collections/auctions/records/${req.params.id}`, {
+      method:  'PATCH',
+      headers: pbHeaders(token),
+      body:    JSON.stringify(patchBody),
+    })
+
+    res.status(201).json({ ok: true, bid: bidData, ...patchBody })
+  } catch (err) {
+    console.error('bid error', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Comprar ahora ─────────────────────────────────────────────────────────────
+// POST /:id/buy-now
+app.post('/:id/buy-now', async (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] || '').trim()
+    if (!userId) return res.status(401).json({ error: 'unauthorized' })
+
+    const token   = await getAdminToken()
+    const auction = await loadAuction(token, req.params.id)
+    if (!auction) return res.status(404).json({ error: 'not_found' })
+
+    if (auction.status !== 'active') return res.status(400).json({ error: 'auction_not_active' })
+    if (!auction.buy_now_price || Number(auction.buy_now_price) <= 0) {
+      return res.status(400).json({ error: 'buy_now_not_available' })
+    }
+    if (userOwnsStore(auction?.expand?.store, userId)) {
+      return res.status(403).json({ error: 'cannot_bid_own_auction' })
+    }
+
+    const amount = Number(auction.buy_now_price)
+
+    const createRes = await fetch(`${PB_URL}/api/collections/auction_bids/records`, {
+      method:  'POST',
+      headers: pbHeaders(token),
+      body:    JSON.stringify({ auction: req.params.id, bidder: userId, amount }),
+    })
+    const bidData = await readJsonSafe(createRes)
+    if (!createRes.ok) return res.status(createRes.status).json({ error: 'buy_now_failed', details: bidData })
+
+    await fetch(`${PB_URL}/api/collections/auctions/records/${req.params.id}`, {
+      method:  'PATCH',
+      headers: pbHeaders(token),
+      body:    JSON.stringify({
+        current_price: amount,
+        bids_count:    Number(auction.bids_count || 0) + 1,
+        status:        'ended',
+        winner:        userId,
+      }),
+    })
+
+    res.status(200).json({ ok: true, bid: bidData, status: 'ended', winner: userId })
+  } catch (err) {
+    console.error('buy-now error', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Cerrar subasta manualmente (vendor) ───────────────────────────────────────
+// POST /:id/end
+app.post('/:id/end', requireAuth, async (req, res) => {
+  try {
+    const token  = await getAdminToken()
+    const userId = req.headers['x-user-id']
+    const role   = req.headers['x-user-role']
+
+    if (role === 'vendor') {
+      const owns = await checkAuctionOwner(token, req.params.id, userId)
+      if (!owns) return res.status(403).json({ error: 'forbidden' })
+    }
+
+    // Buscar la puja ganadora
+    const bidParams = new URLSearchParams({
+      filter:  `auction="${req.params.id}"`,
+      sort:    '-amount',
+      perPage: '1',
+    })
+    const bidRes = await fetch(
+      `${PB_URL}/api/collections/auction_bids/records?${bidParams}`,
+      { headers: pbHeaders(token) }
+    )
+    const bidData = bidRes.ok ? await readJsonSafe(bidRes) : null
+    const winningBid = bidData?.items?.[0] || null
+
+    const patchBody = { status: 'ended' }
+    if (winningBid) {
+      patchBody.winner        = winningBid.bidder
+      patchBody.current_price = winningBid.amount
+    }
+
+    const pbRes = await fetch(
+      `${PB_URL}/api/collections/auctions/records/${req.params.id}`,
+      { method: 'PATCH', headers: pbHeaders(token), body: JSON.stringify(patchBody) }
+    )
+    const data = await readJsonSafe(pbRes)
+    if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'end_failed', details: data })
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── Eliminar subasta ───────────────────────────────────────────────────────────
 app.delete('/:id', requireAuth, async (req, res) => {
   try {
