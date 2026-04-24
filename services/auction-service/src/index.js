@@ -305,6 +305,41 @@ app.get('/:id/bids', async (req, res) => {
   }
 })
 
+// ── Helper: crear orders_bid cuando hay ganador ────────────────────────────────
+async function createBidOrder(token, auction, winnerId, winningAmount) {
+  try {
+    const auctionId = auction.id
+    // Evitar duplicados
+    const existRes = await fetch(
+      `${PB_URL}/api/collections/orders_bid/records?filter=${encodeURIComponent(`bid="${auctionId}"`)}&perPage=1&fields=id`,
+      { headers: pbHeaders(token) }
+    )
+    if (existRes.ok) {
+      const existData = await readJsonSafe(existRes)
+      if (existData?.items?.length > 0) return
+    }
+
+    const storeId = Array.isArray(auction.store) ? auction.store[0] : auction.store
+    const paymentUntil = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
+
+    await fetch(`${PB_URL}/api/collections/orders_bid/records`, {
+      method: 'POST',
+      headers: pbHeaders(token),
+      body: JSON.stringify({
+        buyer:         winnerId,
+        store:         storeId,
+        bid:           auctionId,
+        total:         winningAmount,
+        currency:      'BS',
+        status:        'pending',
+        payment_until: paymentUntil,
+      }),
+    })
+  } catch (err) {
+    console.error('[auction] createBidOrder error:', err.message)
+  }
+}
+
 // ── Helper: cargar subasta completa ───────────────────────────────────────────
 async function loadAuction(token, auctionId) {
   const pbRes = await fetch(
@@ -409,6 +444,10 @@ app.post('/:id/bids', async (req, res) => {
       body:    JSON.stringify(patchBody),
     })
 
+    if (reachesBuyNow) {
+      await createBidOrder(token, auction, userId, finalAmount)
+    }
+
     res.status(201).json({
       ok: true,
       bid: bidData,
@@ -463,6 +502,8 @@ app.post('/:id/buy-now', async (req, res) => {
       }),
     })
 
+    await createBidOrder(token, auction, userId, amount)
+
     res.status(200).json({ ok: true, bid: bidData, status: 'ended', winner: userId })
   } catch (err) {
     console.error('buy-now error', err)
@@ -508,6 +549,12 @@ app.post('/:id/end', requireAuth, async (req, res) => {
     )
     const data = await readJsonSafe(pbRes)
     if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'end_failed', details: data })
+
+    if (winningBid) {
+      const auctionForOrder = { id: req.params.id, store: data.store }
+      await createBidOrder(token, auctionForOrder, winningBid.bidder, winningBid.amount)
+    }
+
     res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })

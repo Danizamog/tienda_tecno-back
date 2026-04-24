@@ -18,6 +18,7 @@ services:
       - GIFTCARD_SERVICE_URL=http://giftcard-service-tecnoweb:9009
       - DASHBOARD_SERVICE_URL=http://dashboard-service-tecnoweb:9010
       - STORE_FOLLOWERS_SERVICE_URL=http://store-followers-service-tecnoweb:9011
+      - BID_ORDER_SERVICE_URL=http://bid-order-service-tecnoweb:9012
     ports:
       - "9000:9000"
     depends_on:
@@ -32,6 +33,7 @@ services:
       - giftcard-service-tecnoweb
       - dashboard-service-tecnoweb
       - store-followers-service-tecnoweb
+      - bid-order-service-tecnoweb
 
   auth-service-tecnoweb:
     build:
@@ -153,3 +155,14 @@ services:
       - PORT=9011
     ports:
       - "9011:9011"
+
+  bid-order-service-tecnoweb:
+    build:
+      context: ./services/bid-order-service
+    container_name: bid-order-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9012
+    ports:
+      - "9012:9012"
