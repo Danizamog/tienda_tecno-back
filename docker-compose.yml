@@ -19,6 +19,7 @@ services:
       - DASHBOARD_SERVICE_URL=http://dashboard-service-tecnoweb:9010
       - STORE_FOLLOWERS_SERVICE_URL=http://store-followers-service-tecnoweb:9011
       - BID_ORDER_SERVICE_URL=http://bid-order-service-tecnoweb:9012
+      - TRANSACTION_SERVICE_URL=http://transaction-service-tecnoweb:9013
     ports:
       - "9000:9000"
     depends_on:
@@ -34,6 +35,7 @@ services:
       - dashboard-service-tecnoweb
       - store-followers-service-tecnoweb
       - bid-order-service-tecnoweb
+      - transaction-service-tecnoweb
 
   auth-service-tecnoweb:
     build:
@@ -166,3 +168,14 @@ services:
       - PORT=9012
     ports:
       - "9012:9012"
+
+  transaction-service-tecnoweb:
+    build:
+      context: ./services/transaction-service
+    container_name: transaction-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9013
+    ports:
+      - "9013:9013"

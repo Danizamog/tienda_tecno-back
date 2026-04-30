@@ -51,7 +51,7 @@ function safeCode(value) {
 }
 
 async function propagateCodeStatusToGiftcards(token, codeId, targetStatus, usageType) {
-  if (!['cancelled', 'expired'].includes(targetStatus)) return
+  if (!['cancelled', 'expired', 'redeemed'].includes(targetStatus)) return
   if (usageType !== 'single_use') return
 
   const params = new URLSearchParams({
@@ -75,6 +75,18 @@ async function propagateCodeStatusToGiftcards(token, codeId, targetStatus, usage
       body:    JSON.stringify({ status: targetStatus }),
     })
   }
+}
+
+async function autoExpireGiftcard(token, gc) {
+  if (!gc?.expires_at) return gc
+  if (new Date(gc.expires_at) >= new Date()) return gc
+  if (gc.status !== 'active') return gc
+  await fetch(`${PB_URL}/api/collections/giftcards/records/${gc.id}`, {
+    method:  'PATCH',
+    headers: pbHeaders(token),
+    body:    JSON.stringify({ status: 'expired' }),
+  })
+  return { ...gc, status: 'expired' }
 }
 
 // ── Middlewares ───────────────────────────────────────────────────────────────
@@ -111,9 +123,16 @@ app.get('/', requireUser, async (req, res) => {
     const token  = await getAdminToken()
     const userId = safeId(req.userId)
     const storeId = safeId(req.query.storeId || '')
+    const status  = String(req.query.status || '').trim()
+    const activeOnly = req.query.activeOnly === 'true' || req.query.activeOnly === '1'
 
     let filter = `owner="${userId}"`
     if (storeId) filter += ` && store="${storeId}"`
+    if (status) {
+      filter += ` && status="${status.replace(/[^a-z]/gi, '')}"`
+    } else if (activeOnly) {
+      filter += ` && status="active"`
+    }
 
     const params = new URLSearchParams({
       filter,
@@ -134,7 +153,19 @@ app.get('/', requireUser, async (req, res) => {
     }
 
     const data = await pbRes.json()
-    res.json({ items: data.items || [], total: data.totalItems || 0 })
+    const items = []
+    for (const raw of (data.items || [])) {
+      const gc = await autoExpireGiftcard(token, raw)
+      // Si pediste activeOnly o status=active, descarta los que ya expiraron.
+      if ((activeOnly || status === 'active') && gc.status !== 'active') continue
+      // Si pidió una tienda, sólo retorna gift cards bound a esa tienda (defensa extra).
+      if (storeId) {
+        const gcStoreId = Array.isArray(gc.store) ? gc.store[0] : gc.store
+        if (!gcStoreId || gcStoreId !== storeId) continue
+      }
+      items.push(gc)
+    }
+    res.json({ items, total: items.length })
   } catch (err) {
     console.error('[giftcard] list error:', err.message)
     res.status(500).json({ error: err.message })
@@ -375,6 +406,11 @@ app.post('/redeem', requireUser, async (req, res) => {
 
     const poolCode = findData.items[0]
 
+    // El código debe estar asociado a una tienda; si no, no se puede usar.
+    if (!poolCode.store) {
+      return res.status(400).json({ error: 'code_no_store', message: 'Este código no está asociado a ninguna tienda.' })
+    }
+
     // Verificar expiración
     if (poolCode.expires_at && new Date(poolCode.expires_at) < new Date()) {
       await fetch(`${PB_URL}/api/collections/giftcard_codes/records/${poolCode.id}`, {
@@ -442,9 +478,9 @@ app.post('/redeem', requireUser, async (req, res) => {
 
     // Actualizar contador en el pool de códigos
     const newCount = (poolCode.redeemed_count || 0) + 1
-    const newStatus = (poolCode.usage_type === 'single_use' || newCount >= (poolCode.max_redemptions || Infinity))
-      ? 'redeemed'
-      : poolCode.status
+    const isSingleUse = poolCode.usage_type === 'single_use'
+    const reachedMax  = newCount >= (poolCode.max_redemptions || Infinity)
+    const newStatus = (isSingleUse || reachedMax) ? 'redeemed' : poolCode.status
 
     await fetch(`${PB_URL}/api/collections/giftcard_codes/records/${poolCode.id}`, {
       method:  'PATCH',
@@ -493,6 +529,15 @@ app.post('/validate', requireUser, async (req, res) => {
 
     const gc = data.items[0]
 
+    // Las giftcards SIEMPRE deben estar asociadas a una tienda. Si no, no se permiten.
+    const gcStoreId = Array.isArray(gc.store) ? gc.store[0] : gc.store
+    if (!gcStoreId) {
+      return res.status(400).json({
+        error: 'store_mismatch',
+        message: 'Esta gift card no tiene tienda asignada y no puede usarse.',
+      })
+    }
+
     if (Number(gc.balance || 0) <= 0) {
       await fetch(`${PB_URL}/api/collections/giftcards/records/${gc.id}`, {
         method:  'PATCH',
@@ -503,14 +548,11 @@ app.post('/validate', requireUser, async (req, res) => {
     }
 
     // Si se envía tienda, validar que la gift card pertenezca a esa tienda.
-    if (storeId) {
-      const gcStoreId = Array.isArray(gc.store) ? gc.store[0] : gc.store
-      if (!gcStoreId || gcStoreId !== storeId) {
-        return res.status(400).json({
-          error: 'store_mismatch',
-          message: 'La gift card solo se puede usar en la tienda que la emitió',
-        })
-      }
+    if (storeId && gcStoreId !== storeId) {
+      return res.status(400).json({
+        error: 'store_mismatch',
+        message: 'La gift card solo se puede usar en la tienda que la emitió',
+      })
     }
 
     // Verificar expiración

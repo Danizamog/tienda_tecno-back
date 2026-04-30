@@ -13,6 +13,16 @@ app.use(express.json())
 const PB_URL      = (process.env.POCKETBASE_URL || '').replace(/\/$/, '')
 const PB_IDENTITY = process.env.POCKETBASE_AUTH_IDENTITY || ''
 const PB_PASSWORD = process.env.POCKETBASE_AUTH_PASSWORD || ''
+const TRANSACTION_SERVICE_URL = (process.env.TRANSACTION_SERVICE_URL || 'http://transaction-service:9013').replace(/\/$/, '')
+
+function notifyBidOrderTransaction(bidOrderId) {
+  if (!bidOrderId) return
+  fetch(`${TRANSACTION_SERVICE_URL}/hooks/bid-order/${bidOrderId}`, { method: 'POST' })
+    .then(async (r) => {
+      if (!r.ok) console.error(`[bid-order] tx hook ${bidOrderId} failed: ${r.status}`)
+    })
+    .catch((err) => console.error(`[bid-order] tx hook ${bidOrderId} error:`, err.message))
+}
 
 let _adminToken = null
 let _adminTokenExpiry = 0
@@ -240,6 +250,7 @@ app.patch('/:id/approve', requireAuth, async (req, res) => {
     )
     const data = await readJsonSafe(pbRes)
     if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'approve_failed', details: data })
+    notifyBidOrderTransaction(req.params.id)
     res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -322,6 +333,7 @@ app.patch('/:id/deliver', requireAuth, async (req, res) => {
     )
     const data = await readJsonSafe(pbRes)
     if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'deliver_failed', details: data })
+    notifyBidOrderTransaction(req.params.id)
     res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })

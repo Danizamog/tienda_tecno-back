@@ -12,6 +12,18 @@ app.use(express.json())
 const PB_URL      = (process.env.POCKETBASE_URL || '').replace(/\/$/, '')
 const PB_IDENTITY = process.env.POCKETBASE_AUTH_IDENTITY || ''
 const PB_PASSWORD = process.env.POCKETBASE_AUTH_PASSWORD || ''
+const TRANSACTION_SERVICE_URL = (process.env.TRANSACTION_SERVICE_URL || 'http://transaction-service:9013').replace(/\/$/, '')
+
+// Fire-and-forget: notifica al transaction-service para que cree la transacción
+// asociada a la orden. No bloquea ni falla la request principal si el hook falla.
+function notifyOrderTransaction(orderId) {
+  if (!orderId) return
+  fetch(`${TRANSACTION_SERVICE_URL}/hooks/order/${orderId}`, { method: 'POST' })
+    .then(async (r) => {
+      if (!r.ok) console.error(`[order] tx hook ${orderId} failed: ${r.status}`)
+    })
+    .catch((err) => console.error(`[order] tx hook ${orderId} error:`, err.message))
+}
 
 let _adminToken = null
 let _adminTokenExpiry = 0
@@ -302,6 +314,7 @@ app.patch('/:id/approve', requireAuth, async (req, res) => {
     )
     const data = await readJsonSafe(pbRes)
     if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'approve_failed', details: data })
+    notifyOrderTransaction(req.params.id)
     res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -384,6 +397,7 @@ app.patch('/:id/deliver', requireAuth, async (req, res) => {
     )
     const data = await readJsonSafe(pbRes)
     if (!pbRes.ok) return res.status(pbRes.status).json({ error: 'deliver_failed', details: data })
+    notifyOrderTransaction(req.params.id)
     res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -843,6 +857,8 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
         }
       }
 
+      // Si no se pudo determinar, asumir single_use (más seguro, no permite reusar).
+      if (!giftcardUsageType) giftcardUsageType = 'single_use'
       appliedGiftcard = { ...gc, _usage_type: giftcardUsageType }
       // Descuento = mínimo entre el saldo de la gift card y el total a pagar
       discountTotal = Math.min(Number(gc.balance), total)
@@ -910,10 +926,15 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
     }
 
     // ── Actualizar saldo de gift card si se aplicó ─────────────────────────────
-    if (appliedGiftcard && (discountTotal > 0 || appliedGiftcard._usage_type === 'single_use')) {
-      const newBalance   = Math.max(0, Math.round((Number(appliedGiftcard.balance) - discountTotal) * 100) / 100)
+    if (appliedGiftcard) {
       const isSingleUse  = appliedGiftcard._usage_type === 'single_use'
-      const newStatus    = (newBalance <= 0 || isSingleUse) ? 'redeemed' : 'active'
+      // En single_use el saldo se consume completo aunque no se haya usado todo:
+      // queda inutilizable después de la compra.
+      const newBalance   = isSingleUse
+        ? 0
+        : Math.max(0, Math.round((Number(appliedGiftcard.balance) - discountTotal) * 100) / 100)
+      const newStatus    = (isSingleUse || newBalance <= 0) ? 'redeemed' : 'active'
+
       const updateGcRes = await fetch(`${PB_URL}/api/collections/giftcards/records/${appliedGiftcard.id}`, {
         method:  'PATCH',
         headers: pbHeaders(token),
@@ -922,6 +943,19 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
       if (!updateGcRes.ok) {
         const details = await readJsonSafe(updateGcRes)
         console.error('[order] giftcard update failed after order creation', details)
+      }
+
+      // Propagar al código fuente: marca el pool como redeemed para single_use,
+      // así nadie más puede canjear el mismo código.
+      const sourceCodeId = Array.isArray(appliedGiftcard.source_code)
+        ? appliedGiftcard.source_code[0]
+        : appliedGiftcard.source_code
+      if (isSingleUse && sourceCodeId) {
+        await fetch(`${PB_URL}/api/collections/giftcard_codes/records/${sourceCodeId}`, {
+          method:  'PATCH',
+          headers: pbHeaders(token),
+          body:    JSON.stringify({ status: 'redeemed' }),
+        }).catch(() => null)
       }
     }
 
