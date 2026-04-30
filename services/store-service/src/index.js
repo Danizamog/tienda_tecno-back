@@ -400,7 +400,7 @@ app.patch('/:id', requireRole('admin'), async (req, res) => {
     const token = await getAdminToken()
 
     const ALLOWED = ['name', 'slug', 'description', 'status', 'verified',
-                     'location', 'whatsapp', 'instagram', 'payment_instructions']
+                     'location', 'whatsapp', 'instagram', 'payment_instructions', 'owner']
     const body = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => ALLOWED.includes(k))
     )
