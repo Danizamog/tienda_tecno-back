@@ -154,7 +154,12 @@ function groupTransactionsByStore(items) {
   return [...map.values()].sort((a, b) => b.gross_amount - a.gross_amount)
 }
 
-async function loadFinanceData() {
+function filterRecordsByStore(items, storeId) {
+  if (!storeId) return items
+  return items.filter((item) => item.store_id === storeId)
+}
+
+async function loadFinanceData({ storeId } = {}) {
   const token = await getAdminToken()
 
   const [transactionsRaw, giftcardsRaw] = await Promise.all([
@@ -170,10 +175,10 @@ async function loadFinanceData() {
     }),
   ])
 
-  return {
-    transactions: transactionsRaw.map(normalizeTransaction),
-    giftcards: giftcardsRaw.map(normalizeGiftcard),
-  }
+  const transactions = filterRecordsByStore(transactionsRaw.map(normalizeTransaction), storeId)
+  const giftcards = filterRecordsByStore(giftcardsRaw.map(normalizeGiftcard), storeId)
+
+  return { transactions, giftcards }
 }
 
 app.get('/health', (_req, res) => {
@@ -190,19 +195,39 @@ app.get('/giftcards', async (_req, res) => {
   }
 })
 
-app.get('/transactions', async (_req, res) => {
+app.get('/transactions', async (req, res) => {
   try {
-    const { transactions } = await loadFinanceData()
-    res.json({ items: transactions })
+    const { storeId } = req.query
+    const { transactions } = await loadFinanceData({ storeId })
+
+    const gananciaTotal = transactions
+      .filter((t) => t.status === 'completed')
+      .reduce((acc, t) => acc + Number(t.amount || 0), 0)
+
+    const chartMap = {}
+    transactions.forEach((t) => {
+      if (t.status === 'completed' && t.created) {
+        const date = t.created.split('T')[0]
+        chartMap[date] = (chartMap[date] || 0) + Number(t.amount || 0)
+      }
+    })
+
+    const chartDaily = Object.keys(chartMap).sort().map((date) => ({
+      date,
+      amount: chartMap[date]
+    }))
+
+    res.json({ items: transactions, gananciaTotal, chartDaily })
   } catch (err) {
     console.error('transactions error', err)
     res.status(500).json({ error: err.message })
   }
 })
 
-app.get('/transactions/by-store', async (_req, res) => {
+app.get('/transactions/by-store', async (req, res) => {
   try {
-    const { transactions } = await loadFinanceData()
+    const { storeId } = req.query
+    const { transactions } = await loadFinanceData({ storeId })
     res.json({ items: groupTransactionsByStore(transactions) })
   } catch (err) {
     console.error('transactions by store error', err)
@@ -210,9 +235,10 @@ app.get('/transactions/by-store', async (_req, res) => {
   }
 })
 
-app.get('/dashboard/summary', async (_req, res) => {
+app.get('/dashboard/summary', async (req, res) => {
   try {
-    const { transactions, giftcards } = await loadFinanceData()
+    const { storeId } = req.query
+    const { transactions, giftcards } = await loadFinanceData({ storeId })
     const completedTransactions = transactions.filter((tx) => tx.status === 'completed')
     const grossTransactions = completedTransactions.reduce((acc, tx) => acc + Number(tx.amount || 0), 0)
     const discountFromGiftcards = completedTransactions
