@@ -186,7 +186,7 @@ app.post(
       const userId = req.headers['x-user-id']
       const role   = req.headers['x-user-role']
 
-      const { title, description, store, product, start_price, reserve_price,
+      const { title, description, store, product, start_price,
               buy_now_price, start_date, end_date, status,
               discount_percent, discount_amount } = req.body
 
@@ -206,7 +206,6 @@ app.post(
       if (product) formData.append('product', product)
       formData.append('start_price', start_price)
       formData.append('current_price', start_price)
-      if (reserve_price) formData.append('reserve_price', reserve_price)
       if (buy_now_price) formData.append('buy_now_price', buy_now_price)
       formData.append('start_date', start_date)
       formData.append('end_date', end_date)
@@ -249,7 +248,7 @@ app.patch('/:id', requireAuth, upload.array('images', 5), async (req, res) => {
       if (!owns) return res.status(403).json({ error: 'forbidden' })
     }
 
-    const ALLOWED = ['title', 'description', 'start_price', 'reserve_price',
+    const ALLOWED = ['title', 'description', 'start_price',
                      'buy_now_price', 'start_date', 'end_date', 'status',
                      'discount_percent', 'discount_amount']
 
