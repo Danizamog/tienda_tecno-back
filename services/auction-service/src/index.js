@@ -384,6 +384,26 @@ app.post('/:id/bids', async (req, res) => {
       return res.status(403).json({ error: 'cannot_bid_own_auction' })
     }
 
+    // No puedes pujarte a ti mismo: si ya eres el top bidder, esperá que alguien te supere
+    if (Number(auction.bids_count || 0) > 0) {
+      const lastBidParams = new URLSearchParams({
+        filter:  `auction="${req.params.id}"`,
+        sort:    '-amount,-created',
+        perPage: '1',
+        fields:  'id,bidder',
+      })
+      const lastBidRes  = await fetch(
+        `${PB_URL}/api/collections/auction_bids/records?${lastBidParams}`,
+        { headers: pbHeaders(token) }
+      )
+      const lastBidData  = await readJsonSafe(lastBidRes)
+      const lastBidder   = lastBidData?.items?.[0]?.bidder
+      const lastBidderId = Array.isArray(lastBidder) ? lastBidder[0] : lastBidder
+      if (lastBidderId && lastBidderId === userId) {
+        return res.status(403).json({ error: 'already_top_bidder' })
+      }
+    }
+
     const amount = Number(req.body?.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: 'invalid_amount' })

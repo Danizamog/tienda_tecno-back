@@ -20,6 +20,7 @@ services:
       - STORE_FOLLOWERS_SERVICE_URL=http://store-followers-service-tecnoweb:9011
       - BID_ORDER_SERVICE_URL=http://bid-order-service-tecnoweb:9012
       - TRANSACTION_SERVICE_URL=http://transaction-service-tecnoweb:9013
+      - CART_SERVICE_URL=http://cart-service-tecnoweb:9014
     ports:
       - "9000:9000"
     depends_on:
@@ -36,6 +37,7 @@ services:
       - store-followers-service-tecnoweb
       - bid-order-service-tecnoweb
       - transaction-service-tecnoweb
+      - cart-service-tecnoweb
 
   auth-service-tecnoweb:
     build:
@@ -179,3 +181,14 @@ services:
       - PORT=9013
     ports:
       - "9013:9013"
+
+  cart-service-tecnoweb:
+    build:
+      context: ./services/cart-service
+    container_name: cart-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9014
+    ports:
+      - "9014:9014"

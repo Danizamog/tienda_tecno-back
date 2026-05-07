@@ -94,21 +94,30 @@ app.get('/', requireAuth, async (req, res) => {
     const perPage = Math.min(100, parseInt(req.query.perPage) || 20)
 
     const filters = []
-    if (req.query.storeId) {
-      filters.push(`store="${req.query.storeId.replace(/"/g, '')}"`)
-    } else if (role === 'vendor') {
-      // Si no se especifica tienda, traer órdenes de TODAS las tiendas del vendor
-      // Primero obtener las tiendas del vendor
+
+    // Para vendors, siempre cargamos sus tiendas para validar ownership.
+    // Si pasan ?storeId=X, debe pertenecerle; si no pasan nada, filtramos por todas las suyas.
+    let vendorStoreIds = null
+    if (role === 'vendor') {
       const storesRes = await fetch(
         `${PB_URL}/api/collections/stores/records?fields=id,owner&perPage=200`,
         { headers: pbHeaders(token) }
       )
       const storesData = storesRes.ok ? await readJsonSafe(storesRes) : null
-      const storeIds = (storesData?.items || [])
+      vendorStoreIds = (storesData?.items || [])
         .filter((store) => userOwnsStore(store, userId))
         .map((store) => store.id)
-      if (!storeIds.length) return res.json({ items: [], totalItems: 0, totalPages: 0 })
-      filters.push(`(${storeIds.map(id => `store="${id}"`).join(' || ')})`)
+    }
+
+    if (req.query.storeId) {
+      const requestedStoreId = String(req.query.storeId).replace(/"/g, '')
+      if (role === 'vendor' && !vendorStoreIds.includes(requestedStoreId)) {
+        return res.status(403).json({ error: 'forbidden' })
+      }
+      filters.push(`store="${requestedStoreId}"`)
+    } else if (role === 'vendor') {
+      if (!vendorStoreIds.length) return res.json({ items: [], totalItems: 0, totalPages: 0 })
+      filters.push(`(${vendorStoreIds.map(id => `store="${id}"`).join(' || ')})`)
     }
 
     if (req.query.status) filters.push(`status="${req.query.status.replace(/"/g, '')}"`)
@@ -408,8 +417,20 @@ app.patch('/:id/deliver', requireAuth, async (req, res) => {
 app.get('/vendor/stats/:storeId', requireAuth, async (req, res) => {
   try {
     const token = await getAdminToken()
+    const userId = req.headers['x-user-id']
+    const role   = req.headers['x-user-role']
     const sid   = req.params.storeId.replace(/"/g, '')
     const enc   = encodeURIComponent
+
+    if (role === 'vendor') {
+      const storeRes = await fetch(
+        `${PB_URL}/api/collections/stores/records/${sid}?fields=id,owner`,
+        { headers: pbHeaders(token) }
+      )
+      if (!storeRes.ok) return res.status(404).json({ error: 'store_not_found' })
+      const store = await readJsonSafe(storeRes)
+      if (!userOwnsStore(store, userId)) return res.status(403).json({ error: 'forbidden' })
+    }
 
     const countStatus = async (status) => {
       const r = await fetch(
@@ -669,12 +690,93 @@ app.delete('/buyer/addresses/:id', requireBuyer, async (req, res) => {
   }
 })
 
+// Debita la gift card de forma atómica con CAS + reintentos.
+// Tras el PATCH, releemos y verificamos que el balance final es exactamente el que
+// escribimos. Si no coincide, otro proceso modificó el saldo en paralelo → revertimos
+// nuestro débito y reintentamos. Sin esta verificación, dos compras simultáneas
+// podrían leer el mismo balance y sobre-consumir la tarjeta.
+async function reserveGiftcardBalance(token, giftcardId, debitAmount, usageType) {
+  const MAX_RETRIES = 5
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const r = await fetch(
+      `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+      { headers: pbHeaders(token) }
+    )
+    if (!r.ok) { const e = new Error('giftcard_fetch_failed'); e.status = 500; throw e }
+    const gc = await r.json()
+    const currentBalance = Number(gc.balance || 0)
+
+    if (gc.status !== 'active') {
+      const e = new Error('giftcard_not_active'); e.status = 400; e.code = 'giftcard_not_active'; throw e
+    }
+    if (currentBalance < debitAmount) {
+      const e = new Error('giftcard_insufficient_balance'); e.status = 400; e.code = 'giftcard_insufficient_balance'; throw e
+    }
+
+    const isSingle   = usageType === 'single_use'
+    const newBalance = isSingle ? 0 : Math.round((currentBalance - debitAmount) * 100) / 100
+    const newStatus  = (isSingle || newBalance <= 0) ? 'redeemed' : 'active'
+
+    const p = await fetch(
+      `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+      { method: 'PATCH', headers: pbHeaders(token),
+        body: JSON.stringify({ balance: newBalance, status: newStatus }) }
+    )
+    if (!p.ok) continue
+
+    const v = await fetch(
+      `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+      { headers: pbHeaders(token) }
+    )
+    if (!v.ok) continue
+    const verified = await v.json()
+    if (Number(verified.balance) !== newBalance) {
+      const revertBalance = Math.round((Number(verified.balance) + debitAmount) * 100) / 100
+      await fetch(
+        `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+        { method: 'PATCH', headers: pbHeaders(token),
+          body: JSON.stringify({ balance: revertBalance, status: 'active' }) }
+      ).catch(() => null)
+      continue
+    }
+    return { previousBalance: currentBalance, newBalance, newStatus, isSingle }
+  }
+  const e = new Error('giftcard_concurrent_modification')
+  e.status = 409; e.code = 'giftcard_concurrent_modification'
+  throw e
+}
+
+async function refundGiftcardBalance(token, giftcardId, refundAmount) {
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(
+      `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+      { headers: pbHeaders(token) }
+    )
+    if (!r.ok) continue
+    const gc = await r.json()
+    const newBalance = Math.round((Number(gc.balance || 0) + refundAmount) * 100) / 100
+    const p = await fetch(
+      `${PB_URL}/api/collections/giftcards/records/${giftcardId}`,
+      { method: 'PATCH', headers: pbHeaders(token),
+        body: JSON.stringify({ balance: newBalance, status: 'active' }) }
+    )
+    if (p.ok) return true
+  }
+  console.error(`[order] giftcard refund failed gc=${giftcardId} amount=${refundAmount}`)
+  return false
+}
+
 // ── Crear orden (comprador) ────────────────────────────────────────────────────
 // POST /buyer/create
 // Body: { storeId, shipping_address_id|shipping_address, items: [{ productId, quantity, unit_price }], notes?, payment_method? }
 app.post('/buyer/create', requireBuyer, async (req, res) => {
+  // Declarados aquí para que el catch general pueda revertir el débito de la
+  // gift card si cualquier excepción no anticipada ocurre tras la reserva.
+  let token = null
+  let appliedGiftcard = null
+  let discountTotal = 0
   try {
-    const token  = await getAdminToken()
+    token  = await getAdminToken()
     const buyerId = req.headers['x-user-id']
 
     const { storeId, items, notes = '', shipping_address_id, shipping_address, giftcard_code } = req.body
@@ -789,8 +891,6 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
     let total = Math.round((subtotal + shippingCost) * 100) / 100
 
     // ── Validar gift card si se proporcionó ────────────────────────────────────
-    let appliedGiftcard  = null
-    let discountTotal    = 0
     const cleanGcCode    = giftcard_code ? String(giftcard_code).replace(/[^A-Z0-9_-]/g, '').slice(0, 32).toUpperCase() : ''
 
     if (cleanGcCode) {
@@ -864,6 +964,25 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
       discountTotal = Math.min(Number(gc.balance), total)
       discountTotal = Math.round(discountTotal * 100) / 100
       total = Math.max(0, Math.round((total - discountTotal) * 100) / 100)
+
+      // Debitar la giftcard ATÓMICAMENTE antes de crear la orden.
+      // Si dos compras con la misma gift card llegan a la vez, sólo una pasa el CAS.
+      try {
+        await reserveGiftcardBalance(token, appliedGiftcard.id, discountTotal, giftcardUsageType)
+      } catch (gcErr) {
+        const status = gcErr.status || 500
+        return res.status(status).json({
+          error:   gcErr.code || 'giftcard_reserve_failed',
+          message: gcErr.message,
+        })
+      }
+    }
+
+    // Helper para revertir el débito de la gift card si la orden falla aguas abajo.
+    const rollbackGiftcard = async () => {
+      if (appliedGiftcard && discountTotal > 0) {
+        await refundGiftcardBalance(token, appliedGiftcard.id, discountTotal)
+      }
     }
 
     // Crear la orden (estado inicial: reserved, cambia a payment_uploaded al subir comprobante)
@@ -896,6 +1015,7 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
     )
     const order = await readJsonSafe(orderRes)
     if (!orderRes.ok) {
+      await rollbackGiftcard()
       return res.status(orderRes.status).json({ error: 'order_create_failed', details: order })
     }
 
@@ -916,41 +1036,23 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
       )
       const createdItem = await readJsonSafe(itemRes)
       if (!itemRes.ok) {
-        // Cleanup: borrar la orden si falla algún item
+        // Cleanup: borrar la orden y revertir débito de gift card
         await fetch(`${PB_URL}/api/collections/orders/records/${order.id}`, {
           method: 'DELETE', headers: pbHeaders(token)
         })
+        await rollbackGiftcard()
         return res.status(500).json({ error: 'item_create_failed', details: createdItem })
       }
       createdItems.push(createdItem)
     }
 
-    // ── Actualizar saldo de gift card si se aplicó ─────────────────────────────
-    if (appliedGiftcard) {
-      const isSingleUse  = appliedGiftcard._usage_type === 'single_use'
-      // En single_use el saldo se consume completo aunque no se haya usado todo:
-      // queda inutilizable después de la compra.
-      const newBalance   = isSingleUse
-        ? 0
-        : Math.max(0, Math.round((Number(appliedGiftcard.balance) - discountTotal) * 100) / 100)
-      const newStatus    = (isSingleUse || newBalance <= 0) ? 'redeemed' : 'active'
-
-      const updateGcRes = await fetch(`${PB_URL}/api/collections/giftcards/records/${appliedGiftcard.id}`, {
-        method:  'PATCH',
-        headers: pbHeaders(token),
-        body:    JSON.stringify({ balance: newBalance, status: newStatus }),
-      })
-      if (!updateGcRes.ok) {
-        const details = await readJsonSafe(updateGcRes)
-        console.error('[order] giftcard update failed after order creation', details)
-      }
-
-      // Propagar al código fuente: marca el pool como redeemed para single_use,
-      // así nadie más puede canjear el mismo código.
+    // Propagar al código fuente: marca el pool como redeemed para single_use,
+    // así nadie más puede canjear el mismo código. El débito del balance ya se hizo arriba.
+    if (appliedGiftcard && appliedGiftcard._usage_type === 'single_use') {
       const sourceCodeId = Array.isArray(appliedGiftcard.source_code)
         ? appliedGiftcard.source_code[0]
         : appliedGiftcard.source_code
-      if (isSingleUse && sourceCodeId) {
+      if (sourceCodeId) {
         await fetch(`${PB_URL}/api/collections/giftcard_codes/records/${sourceCodeId}`, {
           method:  'PATCH',
           headers: pbHeaders(token),
@@ -961,6 +1063,9 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
 
     res.status(201).json({ ...order, items: createdItems, discount_total: discountTotal, giftcard_code: cleanGcCode })
   } catch (err) {
+    if (token && appliedGiftcard && discountTotal > 0) {
+      await refundGiftcardBalance(token, appliedGiftcard.id, discountTotal).catch(() => null)
+    }
     res.status(500).json({ error: err.message })
   }
 })
