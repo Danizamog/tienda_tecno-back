@@ -1,6 +1,7 @@
 const express = require('express')
 const cors    = require('cors')
 const multer  = require('multer')
+const cron    = require('node-cron')
 
 const app    = express()
 const PORT   = Number(process.env.PORT || 9004)
@@ -603,5 +604,87 @@ app.delete('/:id', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
+
+// ── Cron: expirar subastas cuyo end_date ya pasó ─────────────────────────────
+// Se ejecuta cada minuto. Busca subastas con status='active' y end_date <= ahora,
+// las marca como 'ended', asigna el ganador (puja más alta) y crea el orders_bid.
+// Mismo flujo que POST /:id/end, pero automático.
+async function expireAuctions() {
+  try {
+    const token = await getAdminToken()
+    const now   = new Date()
+
+    // Traer todas las activas (hasta 200) y filtrar por end_date en JS
+    // para evitar problemas de formato de fecha en el filtro de PocketBase.
+    const params = new URLSearchParams({
+      filter:  'status="active"',
+      perPage: '200',
+      fields:  'id,end_date,store,current_price',
+    })
+    const listRes = await fetch(
+      `${PB_URL}/api/collections/auctions/records?${params}`,
+      { headers: pbHeaders(token) }
+    )
+    if (!listRes.ok) return
+
+    const listData = await readJsonSafe(listRes)
+    const expired  = (listData?.items || []).filter(a => new Date(a.end_date) <= now)
+    if (!expired.length) return
+
+    console.log(`[auction-cron] Expirando ${expired.length} subasta(s)...`)
+
+    for (const auction of expired) {
+      try {
+        // Buscar la puja ganadora (monto más alto)
+        const bidParams = new URLSearchParams({
+          filter:  `auction="${auction.id}"`,
+          sort:    '-amount',
+          perPage: '1',
+        })
+        const bidRes  = await fetch(
+          `${PB_URL}/api/collections/auction_bids/records?${bidParams}`,
+          { headers: pbHeaders(token) }
+        )
+        const bidData    = bidRes.ok ? await readJsonSafe(bidRes) : null
+        const winningBid = bidData?.items?.[0] || null
+
+        // Actualizar estado de la subasta
+        const patchBody = { status: 'ended' }
+        if (winningBid) {
+          patchBody.winner        = winningBid.bidder
+          patchBody.current_price = winningBid.amount
+        }
+
+        const patchRes = await fetch(
+          `${PB_URL}/api/collections/auctions/records/${auction.id}`,
+          { method: 'PATCH', headers: pbHeaders(token), body: JSON.stringify(patchBody) }
+        )
+        if (!patchRes.ok) {
+          console.error(`[auction-cron] Error al expirar ${auction.id}: ${patchRes.status}`)
+          continue
+        }
+
+        // Crear orden de puja para el ganador
+        if (winningBid) {
+          await createBidOrder(token, auction, winningBid.bidder, winningBid.amount)
+        }
+
+        console.log(
+          `[auction-cron] Expirada: ${auction.id}` +
+          (winningBid ? ` → ganador: ${winningBid.bidder}` : ' (sin pujas)')
+        )
+      } catch (err) {
+        console.error(`[auction-cron] Error procesando ${auction.id}:`, err.message)
+      }
+    }
+  } catch (err) {
+    console.error('[auction-cron] Error general:', err.message)
+  }
+}
+
+// Ejecutar al arrancar (para expirar inmediatamente las pendientes)
+// y luego cada minuto.
+expireAuctions()
+cron.schedule('* * * * *', expireAuctions, { timezone: 'UTC' })
 
 app.listen(PORT, () => console.log(`auction-service running on port ${PORT}`))
