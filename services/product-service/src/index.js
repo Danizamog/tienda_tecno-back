@@ -173,7 +173,7 @@ app.post(
       const userId = req.headers['x-user-id']
       const role   = req.headers['x-user-role']
 
-      const { name, description, price, store, category, stock, status,
+      const { name, description, price, cost_price, store, category, stock, status,
               condition, featured, discount_percent, discount_amount,
               discount_starts_at, discount_ends_at } = req.body
 
@@ -191,6 +191,7 @@ app.post(
       formData.append('name', name)
       formData.append('description', description || '')
       formData.append('price', price)
+      if (cost_price !== undefined && cost_price !== '') formData.append('cost_price', cost_price)
       formData.append('store', store)
       if (category) formData.append('category', category)
       formData.append('stock', stock ?? 1)
@@ -241,7 +242,7 @@ app.patch(
       }
 
       const formData = new FormData()
-      const ALLOWED = ['name', 'description', 'price', 'category', 'stock', 'status',
+      const ALLOWED = ['name', 'description', 'price', 'cost_price', 'category', 'stock', 'status',
                        'condition', 'featured', 'discount_percent', 'discount_amount',
                        'discount_starts_at', 'discount_ends_at']
 

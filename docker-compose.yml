@@ -21,6 +21,7 @@ services:
       - BID_ORDER_SERVICE_URL=http://bid-order-service-tecnoweb:9012
       - TRANSACTION_SERVICE_URL=http://transaction-service-tecnoweb:9013
       - CART_SERVICE_URL=http://cart-service-tecnoweb:9014
+      - PREDICTION_SERVICE_URL=http://prediction-service-tecnoweb:9015
     ports:
       - "9000:9000"
     depends_on:
@@ -38,6 +39,7 @@ services:
       - bid-order-service-tecnoweb
       - transaction-service-tecnoweb
       - cart-service-tecnoweb
+      - prediction-service-tecnoweb
 
   auth-service-tecnoweb:
     build:
@@ -192,3 +194,14 @@ services:
       - PORT=9014
     ports:
       - "9014:9014"
+
+  prediction-service-tecnoweb:
+    build:
+      context: ./services/prediction-service
+    container_name: prediction-service-tecnoweb
+    env_file:
+      - ./.env
+    environment:
+      - PORT=9015
+    ports:
+      - "9015:9015"

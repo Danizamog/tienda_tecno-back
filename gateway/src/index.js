@@ -20,6 +20,7 @@ const STORE_FOLLOWERS_SERVICE_URL = process.env.STORE_FOLLOWERS_SERVICE_URL || '
 const BID_ORDER_SERVICE_URL       = process.env.BID_ORDER_SERVICE_URL       || 'http://bid-order-service:9012'
 const TRANSACTION_SERVICE_URL     = process.env.TRANSACTION_SERVICE_URL     || 'http://transaction-service:9013'
 const CART_SERVICE_URL            = process.env.CART_SERVICE_URL            || 'http://cart-service:9014'
+const PREDICTION_SERVICE_URL      = process.env.PREDICTION_SERVICE_URL      || 'http://prediction-service:9015'
 
 app.use(cors())
 app.use(morgan('dev'))
@@ -32,7 +33,7 @@ app.get('/', (_req, res) => {
   res.json({
     service: 'api-gateway',
     ok: true,
-    routes: ['/auth', '/stores', '/products', '/auctions', '/orders', '/finance', '/wishlist', '/reviews', '/giftcards', '/dashboard', '/followers', '/orders-bid', '/transactions', '/cart'],
+    routes: ['/auth', '/stores', '/products', '/auctions', '/orders', '/finance', '/wishlist', '/reviews', '/giftcards', '/dashboard', '/followers', '/orders-bid', '/transactions', '/cart', '/predictions'],
   })
 })
 
@@ -50,6 +51,7 @@ app.use('/followers',   createProxyMiddleware({ target: STORE_FOLLOWERS_SERVICE_
 app.use('/orders-bid', createProxyMiddleware({ target: BID_ORDER_SERVICE_URL,       changeOrigin: true }))
 app.use('/transactions', createProxyMiddleware({ target: TRANSACTION_SERVICE_URL,   changeOrigin: true }))
 app.use('/cart',         createProxyMiddleware({ target: CART_SERVICE_URL,          changeOrigin: true }))
+app.use('/predictions',  createProxyMiddleware({ target: PREDICTION_SERVICE_URL,    changeOrigin: true }))
 
 app.listen(PORT, () => {
   console.log(`api-gateway running on port ${PORT}`)

@@ -842,7 +842,7 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
       }
 
       const prodRes = await fetch(
-        `${PB_URL}/api/collections/products/records/${item.productId}?fields=id,name,price,stock,store,status,discount_percent,discount_amount`,
+        `${PB_URL}/api/collections/products/records/${item.productId}?fields=id,name,price,cost_price,stock,store,status,discount_percent,discount_amount`,
         { headers: pbHeaders(token) }
       )
       if (!prodRes.ok) return res.status(404).json({ error: `producto_no_encontrado: ${item.productId}` })
@@ -879,6 +879,10 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
         quantity:  item.quantity,
         unit_price,
         total,
+        unit_cost: Number.isFinite(Number(prod.cost_price)) ? Math.max(0, Number(prod.cost_price)) : null,
+        cost_total: Number.isFinite(Number(prod.cost_price))
+          ? Math.round(Math.max(0, Number(prod.cost_price)) * item.quantity * 100) / 100
+          : null,
       })
     }
 
@@ -1029,6 +1033,7 @@ app.post('/buyer/create', requireBuyer, async (req, res) => {
         quantity:   item.quantity,
         unit_price: item.unit_price,
         total:      item.total,
+        ...(item.unit_cost !== null ? { unit_cost: item.unit_cost, cost_total: item.cost_total } : {}),
       }
       const itemRes = await fetch(
         `${PB_URL}/api/collections/order_items/records`,

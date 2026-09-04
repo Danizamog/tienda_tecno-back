@@ -115,9 +115,20 @@ async function syncMetricsForDate(dateStr) {
 
       let sales_total     = 0
       let discounts_total = 0
+      let units_sold      = 0
       for (const order of orders) {
         sales_total     += Number(order.total          || 0)
         discounts_total += Number(order.discount_total || 0)
+      }
+
+      const orderIds = orders.map((order) => `order="${order.id}"`).join(' || ')
+      if (orderIds) {
+        const itemsRes = await fetch(
+          `${PB_URL}/api/collections/order_items/records?perPage=200&filter=${encodeURIComponent(orderIds)}&fields=quantity`,
+          { headers: pbHeaders(token) }
+        )
+        const itemsData = await readJsonSafe(itemsRes)
+        for (const item of (itemsData?.items || [])) units_sold += Number(item.quantity || 0)
       }
 
       // ── Gift cards emitidas en el día ─────────────────────────────────────
@@ -148,6 +159,8 @@ async function syncMetricsForDate(dateStr) {
         store:              storeId,
         sales_total:        Math.round(sales_total * 100) / 100,
         transactions_count: orders.length,
+        units_sold,
+        average_order_value: orders.length ? Math.round((sales_total / orders.length) * 100) / 100 : 0,
         discounts_total:    Math.round(discounts_total * 100) / 100,
         giftcards_total,
         auctions_total,
